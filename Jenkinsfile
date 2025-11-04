@@ -16,7 +16,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    sh "docker build -t $IMAGE_NAME:$IMAGE_TAG ."
+                    sh "docker build -t $IMAGE_NAME:$IMAGE_TAG --build-arg REACT_APP_API_URL=http://backend:5000 ."
                 }
             }
         }

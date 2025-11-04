@@ -4,12 +4,19 @@ import "./App.css";
 function App() {
   const [message, setMessage] = useState("Loading...");
 
+  // ✅ Use environment variable or fallback to localhost
+  const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
+
   useEffect(() => {
-    fetch("http://localhost:5000/api/message")
+    // ✅ Dynamic backend URL
+    fetch(`${API_BASE_URL}/api/message`)
       .then((res) => res.json())
       .then((data) => setMessage(data.message))
-      .catch((err) => setMessage("Error connecting to backend"));
-  }, []);
+      .catch((err) => {
+        console.error("Error fetching message:", err);
+        setMessage("Error connecting to backend");
+      });
+  }, [API_BASE_URL]); // Dependency for re-runs if base URL changes
 
   return (
     <div className="App">

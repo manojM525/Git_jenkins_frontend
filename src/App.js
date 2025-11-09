@@ -5,7 +5,7 @@ function App() {
   const [message, setMessage] = useState("Loading...");
 
   // ✅ Use environment variable or fallback to localhost
-  const API_BASE_URL = process.env.REACT_APP_API_URL || "http://backend:5000";
+  const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
 
   useEffect(() => {
     // ✅ Dynamic backend URL

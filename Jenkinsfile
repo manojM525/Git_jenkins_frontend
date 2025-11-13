@@ -8,7 +8,7 @@ pipeline {
     GIT_CRED_ID         = 'git_access_cred'
     DEPLOYMENT_REPO_URL = 'https://github.com/manojM525/DEVOPS_DEPLOYMENT.git'
     DEPLOYMENT_REPO_DIR = 'DEVOPS_DEPLOYMENT'
-    DEPLOYMENT_FILE     = "frontend/deployment.yaml"        
+    DEPLOYMENT_FILE     = 'frontend/deployment.yaml'        
     DOCKER_IMAGE        = 'manojm525/frontend'                  
     ARGOCD_SERVER       = 'argocd.example.com'
     ARGOCD_TOKEN_ID     = 'argocd-token'
@@ -52,12 +52,18 @@ pipeline {
         script {
           // Clone the manifests repo
           sh "rm -rf ${DEPLOYMENT_REPO_DIR}"
-          git branch: 'main',
-              credentialsId: env.GIT_CRED_ID,
-              url: env.DEPLOYMENT_REPO_URL
-
-          // Update image tag using yq
           dir("${DEPLOYMENT_REPO_DIR}") {
+            checkout([$class: 'GitSCM',
+                branches: [[name: '*/main']],
+                userRemoteConfigs: [[
+                   url: DEPLOYMENT_REPO_URL,
+                   credentialsId: GIT_CRED_ID
+                ]]
+            ])
+
+          
+          // Update image tag using yq
+          
             sh """
               yq e -i '.spec.template.spec.containers[0].image = "${DOCKER_IMAGE}:${NEW_VERSION}"' ${DEPLOYMENT_FILE}
               echo "🧩 Updating backend image in ${DEPLOYMENT_FILE}..."

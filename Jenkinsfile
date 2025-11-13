@@ -73,6 +73,7 @@ pipeline {
             sh """
               git config user.name "jenkins-ci"
               git config user.email "jenkins@company.com"
+              git checkout main || git checkout -b main
               git add ${DEPLOYMENT_FILE}
               git commit -m "chore(${SERVICE_NAME}): bump image to v${NEW_VERSION}" || echo "no changes"
               git push https://${GIT_USER}:${GIT_PASS}@github.com/manojM525/DEVOPS_DEPLOYMENT.git main

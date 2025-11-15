@@ -1,0 +1,159 @@
+pipeline {
+  agent any
+
+  environment {
+    FRONTEND_DIR      = 'frontend'                // path to your react project
+    K8S_MANIFEST_DIR  = 'deploy/k8s'             // path where your k8s deployment.yaml or Helm chart exists
+    DEPLOYMENT_FILE   = "${K8S_MANIFEST_DIR}/deployment.yaml" // used if you're using plain manifests
+    IMAGE_NAME        = 'my-frontend'            // repo name (without username)
+    GIT_CRED_ID       = 'jenkins-git'            // Jenkins credential id for git push (username+token/ssh)
+    DOCKER_CRED_ID    = 'dockerhub'              // Jenkins docker creds (username/password/token)
+    ARGOCD_TOKEN_ID   = 'argocd-token'           // Jenkins secret text credential with ArgoCD token
+    ARGOCD_SERVER     = 'argocd.example.com'     // ArgoCD server host
+    ARGOCD_APP_NAME   = 'frontend-app'           // ArgoCD application name to sync
+    GIT_USER_NAME     = 'jenkins-ci'
+    GIT_USER_EMAIL    = 'jenkins@company.com'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Read Version') {
+      steps {
+        script {
+          // needs pipeline-utility-steps plugin
+          def pkg = readJSON file: "${FRONTEND_DIR}/package.json"
+          env.NEW_VERSION = pkg.version
+          echo "Detected version: ${env.NEW_VERSION}"
+        }
+      }
+    }
+
+    stage('Detect Version Change') {
+      steps {
+        script {
+          // Use git to fetch previous commit's package.json if commit history is available
+          def oldVersion = ''
+          try {
+            oldVersion = sh(script: "git show HEAD~1:${FRONTEND_DIR}/package.json | jq -r .version", returnStdout: true).trim()
+          } catch (exc) {
+            // If HEAD~1 not available (first commit on the branch), fallback
+            oldVersion = ''
+          }
+          env.OLD_VERSION = oldVersion
+          echo "Old version: ${env.OLD_VERSION ?: 'N/A'}"
+          if (env.OLD_VERSION && env.OLD_VERSION != env.NEW_VERSION) {
+            env.VERSION_BUMP = 'true'
+            echo "Version bump: ${env.OLD_VERSION} → ${env.NEW_VERSION}"
+          } else if (!env.OLD_VERSION) {
+            env.VERSION_BUMP = 'true'
+            echo "No previous version found; treating as initial version ${env.NEW_VERSION}"
+          } else {
+            env.VERSION_BUMP = 'false'
+            echo "No version change detected."
+          }
+        }
+      }
+    }
+
+    stage('Docker Build') {
+      steps {
+        script {
+          echo "Building image ${IMAGE_NAME}:${env.NEW_VERSION}"
+          sh """
+            cd ${FRONTEND_DIR}
+            docker build -t ${IMAGE_NAME}:${env.NEW_VERSION} .
+          """
+        }
+      }
+    }
+
+    stage('Docker Login & Push') {
+      steps {
+        script {
+          withCredentials([usernamePassword(credentialsId: env.DOCKER_CRED_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+            sh '''
+              echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+              docker tag ${IMAGE_NAME}:${NEW_VERSION} $DOCKER_USER/${IMAGE_NAME}:${NEW_VERSION}
+              docker tag ${IMAGE_NAME}:${NEW_VERSION} $DOCKER_USER/${IMAGE_NAME}:latest
+              docker push $DOCKER_USER/${IMAGE_NAME}:${NEW_VERSION}
+              docker push $DOCKER_USER/${IMAGE_NAME}:latest
+              docker logout
+            '''
+            // export for later use by manifest update
+            env.REGISTRY_USER = sh(script: "echo $DOCKER_USER", returnStdout: true).trim()
+          }
+        }
+      }
+    }
+
+    stage('Update K8s Manifests in Git') {
+      when {
+        expression { return env.VERSION_BUMP == 'true' }
+      }
+      steps {
+        script {
+          // Configure git user for the automated commit
+          sh """
+            git config user.name "${GIT_USER_NAME}"
+            git config user.email "${GIT_USER_EMAIL}"
+          """
+
+          // Option A: plain Kubernetes YAML (recommended: use yq)
+          // Update container image in deployment.yaml using yq (must be installed on agent)
+          // This example updates the first container. If you have multiple containers, match by name.
+          sh """
+            # ensure we are on a branch we can push to; you can also create a branch for PR flow
+            git checkout -B ci/update-image-v${NEW_VERSION}
+
+            # update deployment image (requires yq v4)
+            yq e -i '.spec.template.spec.containers[0].image = "${REGISTRY_USER}/${IMAGE_NAME}:${NEW_VERSION}"' ${DEPLOYMENT_FILE}
+          """
+
+          // Show diff and commit
+          sh """
+            git add ${DEPLOYMENT_FILE}
+            git commit -m "chore(release): bump ${IMAGE_NAME} image to v${NEW_VERSION} [ci skip]" || echo "no changes to commit"
+            git push origin HEAD --force
+          """
+        }
+      }
+    }
+
+    stage('Trigger ArgoCD Sync') {
+      when {
+        expression { return env.VERSION_BUMP == 'true' }
+      }
+      steps {
+        script {
+          // Use argocd CLI + token (ARGOCMD needs to be installed on the agent)
+          withCredentials([string(credentialsId: env.ARGOCD_TOKEN_ID, variable: 'ARGO_TOKEN')]) {
+            // Login (server, token) and sync
+            sh """
+              argocd login ${ARGOCD_SERVER} --sso --insecure --username admin --password "\${ARGO_TOKEN}" >/dev/null 2>&1 || true
+              # sync the application in ArgoCD
+              argocd app sync ${ARGOCD_APP_NAME} --server ${ARGOCD_SERVER} || true
+              # Optionally wait until synced and healthy (timeout in seconds)
+              argocd app wait ${ARGOCD_APP_NAME} --server ${ARGOCD_SERVER} --health --timeout 300
+            """
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success {
+      script {
+        echo "Build finished. Version: ${env.NEW_VERSION}"
+      }
+    }
+    failure {
+      echo "Build failed."
+    }
+  }
+}
